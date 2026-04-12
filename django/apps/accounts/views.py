@@ -520,7 +520,7 @@ class GroupMessageListCreateView(APIView):
             message = serializer.save(group=group, sender=request.user)
             Group.objects.filter(id=group.id).update(updated_at=timezone.now())
 
-        message = Message.objects.select_related("sender").prefetch_related("visible_to").get(id=message.id)
+        message = Message.objects.select_related("sender").get(id=message.id)
         return Response(
             MessageSerializer(message, context={"request": request}).data,
             status=status.HTTP_201_CREATED,
