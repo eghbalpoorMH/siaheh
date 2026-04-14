@@ -3,7 +3,9 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from .models import Space, SpaceMembership, Message, User
+from apps.accounts.models import User
+from apps.entries.models import Message
+from apps.spaces.models import Space, SpaceMembership
 
 
 class AccountsPrivacyAndMembershipTests(APITestCase):

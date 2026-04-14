@@ -1,7 +1,9 @@
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
 
-from .models import Space, SpaceMembership, Message, User
+from apps.accounts.models import User
+from apps.entries.models import Message
+from apps.spaces.models import Space, SpaceMembership
 
 
 def get_space_for_user_or_404(space_id, user: User) -> Space:

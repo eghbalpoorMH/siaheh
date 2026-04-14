@@ -7,6 +7,24 @@ import uuid
 from django.db import migrations, models
 
 
+def ensure_accounts_base_tables(apps, schema_editor):
+    """
+    Recovery guard for environments where accounts.0001 is marked as applied
+    but one or more base tables are missing.
+    """
+    existing_tables = set(schema_editor.connection.introspection.table_names())
+    Space = apps.get_model("accounts", "Space")
+    UserClientLogin = apps.get_model("accounts", "UserClientLogin")
+    Message = apps.get_model("accounts", "Message")
+    SpaceMembership = apps.get_model("accounts", "SpaceMembership")
+
+    for model in (Space, UserClientLogin, Message, SpaceMembership):
+        table = model._meta.db_table
+        if table not in existing_tables:
+            schema_editor.create_model(model)
+            existing_tables.add(table)
+
+
 def backfill_usernames_and_personal_spaces(apps, schema_editor):
     User = apps.get_model("accounts", "User")
     Space = apps.get_model("accounts", "Space")
@@ -51,6 +69,7 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
+        migrations.RunPython(ensure_accounts_base_tables, migrations.RunPython.noop),
         migrations.AddField(
             model_name="space",
             name="kind",
