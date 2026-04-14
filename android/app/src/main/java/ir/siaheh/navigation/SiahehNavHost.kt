@@ -10,22 +10,24 @@ import androidx.navigation.navArgument
 import ir.siaheh.ui.auth.AuthViewModel
 import ir.siaheh.ui.auth.LoginScreen
 import ir.siaheh.ui.auth.OtpVerifyScreen
+import ir.siaheh.ui.auth.ProfileSetupScreen
 import ir.siaheh.ui.components.LoadingIndicator
 import ir.siaheh.ui.components.UpdateDialog
-import ir.siaheh.ui.group.GroupChatScreen
-import ir.siaheh.ui.group.GroupListScreen
-import ir.siaheh.ui.group.GroupMembersScreen
+import ir.siaheh.ui.space.SpaceChatScreen
+import ir.siaheh.ui.space.SpaceListScreen
+import ir.siaheh.ui.space.SpaceMembersScreen
 
 object Routes {
     const val LOGIN = "login"
     const val OTP_VERIFY = "otp_verify/{phone}"
-    const val GROUPS = "groups"
-    const val GROUP_CHAT = "group/{groupId}"
-    const val GROUP_MEMBERS = "group/{groupId}/members"
+    const val PROFILE_SETUP = "profile_setup"
+    const val SPACES = "spaces"
+    const val SPACE_CHAT = "space/{spaceId}"
+    const val SPACE_MEMBERS = "space/{spaceId}/members"
 
     fun otpVerify(phone: String) = "otp_verify/$phone"
-    fun groupChat(groupId: String) = "group/$groupId"
-    fun groupMembers(groupId: String) = "group/$groupId/members"
+    fun spaceChat(spaceId: String) = "space/$spaceId"
+    fun spaceMembers(spaceId: String) = "space/$spaceId/members"
 }
 
 @Composable
@@ -39,7 +41,11 @@ fun SiahehNavHost() {
         return
     }
 
-    val startDestination = if (uiState.isAuthenticated) Routes.GROUPS else Routes.LOGIN
+    val startDestination = if (uiState.isAuthenticated) {
+        if (uiState.needsProfileSetup) Routes.PROFILE_SETUP else Routes.SPACES
+    } else {
+        Routes.LOGIN
+    }
 
     uiState.updateInfo?.let { updateInfo ->
         UpdateDialog(
@@ -74,8 +80,9 @@ fun SiahehNavHost() {
                 otpExpiresIn = uiState.otpExpiresIn,
                 otpChannels = uiState.otpChannels,
                 onVerify = { code ->
-                    authViewModel.verifyOtp(phone, code) {
-                        navController.navigate(Routes.GROUPS) {
+                    authViewModel.verifyOtp(phone, code) { needsProfileSetup ->
+                        val next = if (needsProfileSetup) Routes.PROFILE_SETUP else Routes.SPACES
+                        navController.navigate(next) {
                             popUpTo(Routes.LOGIN) { inclusive = true }
                         }
                     }
@@ -86,28 +93,42 @@ fun SiahehNavHost() {
                 onBack = { navController.popBackStack() },
             )
         }
-        composable(Routes.GROUPS) {
-            GroupListScreen(
-                onOpenGroup = { groupId -> navController.navigate(Routes.groupChat(groupId)) },
+        composable(Routes.PROFILE_SETUP) {
+            ProfileSetupScreen(
+                isLoading = uiState.isLoading,
+                currentDisplayName = uiState.user?.displayName.orEmpty(),
+                currentUsername = uiState.user?.username.orEmpty(),
+                onSubmit = { displayName, username, about, avatarUri ->
+                    authViewModel.completeProfile(displayName, username, about, avatarUri) {
+                        navController.navigate(Routes.SPACES) {
+                            popUpTo(Routes.PROFILE_SETUP) { inclusive = true }
+                        }
+                    }
+                },
+            )
+        }
+        composable(Routes.SPACES) {
+            SpaceListScreen(
+                onOpenSpace = { spaceId -> navController.navigate(Routes.spaceChat(spaceId)) },
             )
         }
         composable(
-            Routes.GROUP_CHAT,
-            arguments = listOf(navArgument("groupId") { type = NavType.StringType }),
+            Routes.SPACE_CHAT,
+            arguments = listOf(navArgument("spaceId") { type = NavType.StringType }),
         ) { backStackEntry ->
-            val groupId = backStackEntry.arguments?.getString("groupId") ?: ""
-            GroupChatScreen(
-                groupId = groupId,
+            val spaceId = backStackEntry.arguments?.getString("spaceId") ?: ""
+            SpaceChatScreen(
+                spaceId = spaceId,
                 onBack = { navController.popBackStack() },
-                onOpenMembers = { navController.navigate(Routes.groupMembers(groupId)) },
+                onOpenMembers = { navController.navigate(Routes.spaceMembers(spaceId)) },
             )
         }
         composable(
-            Routes.GROUP_MEMBERS,
-            arguments = listOf(navArgument("groupId") { type = NavType.StringType }),
+            Routes.SPACE_MEMBERS,
+            arguments = listOf(navArgument("spaceId") { type = NavType.StringType }),
         ) { backStackEntry ->
-            val groupId = backStackEntry.arguments?.getString("groupId") ?: ""
-            GroupMembersScreen(groupId = groupId, onBack = { navController.popBackStack() })
+            val spaceId = backStackEntry.arguments?.getString("spaceId") ?: ""
+            SpaceMembersScreen(spaceId = spaceId, onBack = { navController.popBackStack() })
         }
     }
 }

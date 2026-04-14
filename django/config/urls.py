@@ -18,9 +18,10 @@ urlpatterns = [
     path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
     path("api/docs/", SpectacularSwaggerView.as_view(url_name="schema"), name="swagger-ui"),
     path("api/redoc/", SpectacularRedocView.as_view(url_name="schema"), name="redoc"),
-    path("api/v1/auth/", include("apps.accounts.urls")),
-    path("api/v1/users/", include("apps.accounts.user_urls")),
-    path("api/v1/groups/", include("apps.accounts.group_urls")),
+    path("api/v1/auth/", include("apps.identity.urls")),
+    path("api/v1/users/", include("apps.identity.user_urls")),
+    path("api/v1/spaces/", include("apps.spaces.urls")),
+    path("api/v1/spaces/", include("apps.entries.urls")),
 ]
 
 if not settings.USE_S3:

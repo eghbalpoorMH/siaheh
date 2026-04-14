@@ -9,7 +9,7 @@ import ir.siaheh.data.api.AppApi
 import ir.siaheh.data.api.AuthApi
 import ir.siaheh.data.api.AuthInterceptor
 import ir.siaheh.data.api.FallbackInterceptor
-import ir.siaheh.data.api.GroupApi
+import ir.siaheh.data.api.SpaceApi
 import ir.siaheh.data.api.TokenRefreshAuthenticator
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
@@ -79,5 +79,5 @@ object NetworkModule {
 
     @Provides
     @Singleton
-    fun provideGroupApi(retrofit: Retrofit): GroupApi = retrofit.create(GroupApi::class.java)
+    fun provideSpaceApi(retrofit: Retrofit): SpaceApi = retrofit.create(SpaceApi::class.java)
 }

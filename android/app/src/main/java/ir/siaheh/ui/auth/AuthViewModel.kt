@@ -1,5 +1,6 @@
 package ir.siaheh.ui.auth
 
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -28,6 +29,7 @@ data class AuthUiState(
     val otpChannels: List<OtpChannel> = emptyList(),
     val error: String? = null,
     val updateInfo: UpdateInfo? = null,
+    val needsProfileSetup: Boolean = false,
 )
 
 @HiltViewModel
@@ -45,10 +47,12 @@ class AuthViewModel @Inject constructor(
             try {
                 val isLoggedIn = authRepository.isLoggedIn()
                 val cachedUser = if (isLoggedIn) authRepository.getSavedUser() else null
+                val freshUser = if (isLoggedIn) runCatching { authRepository.refreshMe() }.getOrNull() else null
                 _uiState.value = _uiState.value.copy(
                     isLoading = false,
                     isAuthenticated = isLoggedIn,
-                    user = cachedUser,
+                    user = freshUser ?: cachedUser,
+                    needsProfileSetup = (freshUser ?: cachedUser)?.displayName?.isBlank() == true,
                 )
                 checkAppVersion()
             } catch (e: Exception) {
@@ -118,7 +122,7 @@ class AuthViewModel @Inject constructor(
         }
     }
 
-    fun verifyOtp(phone: String, code: String, onSuccess: (() -> Unit)? = null) {
+    fun verifyOtp(phone: String, code: String, onSuccess: ((Boolean) -> Unit)? = null) {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true, error = null)
             try {
@@ -137,8 +141,9 @@ class AuthViewModel @Inject constructor(
                     isAuthenticated = true,
                     user = response.user,
                     updateInfo = updateInfo,
+                    needsProfileSetup = response.user.displayName.isBlank(),
                 )
-                onSuccess?.invoke()
+                onSuccess?.invoke(response.user.displayName.isBlank())
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(isLoading = false, error = e.message ?: "کد وارد شده اشتباه است")
             }
@@ -149,6 +154,29 @@ class AuthViewModel @Inject constructor(
         viewModelScope.launch {
             authRepository.logout()
             _uiState.value = AuthUiState(isLoading = false, isAuthenticated = false)
+        }
+    }
+
+    fun completeProfile(
+        displayName: String,
+        username: String,
+        about: String,
+        avatarUri: Uri? = null,
+        onSuccess: (() -> Unit)? = null,
+    ) {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isLoading = true, error = null)
+            try {
+                val updated = authRepository.updateProfile(displayName, username, about, avatarUri)
+                _uiState.value = _uiState.value.copy(
+                    isLoading = false,
+                    user = updated,
+                    needsProfileSetup = false,
+                )
+                onSuccess?.invoke()
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(isLoading = false, error = e.message ?: "خطا در تکمیل پروفایل")
+            }
         }
     }
 

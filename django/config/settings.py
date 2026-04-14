@@ -28,6 +28,9 @@ INSTALLED_APPS = [
     "corsheaders",
     "drf_spectacular",
     "apps.accounts",
+    "apps.identity",
+    "apps.spaces",
+    "apps.entries",
     "apps.common",
 ]
 
@@ -189,3 +192,10 @@ APP_VERSION_LATEST = config("APP_VERSION_LATEST", default="1.0.0")
 APP_VERSION_MIN = config("APP_VERSION_MIN", default="1.0.0")
 APP_UPDATE_URL = config("APP_UPDATE_URL", default="")
 
+ENTRY_MAX_ATTACHMENTS = config("ENTRY_MAX_ATTACHMENTS", default=10, cast=int)
+ENTRY_MAX_FILE_SIZE_MB = config("ENTRY_MAX_FILE_SIZE_MB", default=25, cast=int)
+ENTRY_ALLOWED_MIME_PREFIXES = config(
+    "ENTRY_ALLOWED_MIME_PREFIXES",
+    default="image/,video/,audio/,application/,text/",
+    cast=Csv(),
+)

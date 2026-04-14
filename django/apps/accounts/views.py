@@ -1,5 +1,7 @@
 import logging
+import mimetypes
 import random
+import re
 from uuid import UUID
 
 from django.conf import settings
@@ -10,6 +12,7 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 from rest_framework import status
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
@@ -17,19 +20,30 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from .models import Group, GroupMembership, Message, User, UserClientLogin
+from .models import Space, SpaceMembership, Message, MessageAttachment, User, UserClientLogin
+from .policies import (
+    can_manage_members,
+    get_space_for_user_or_404,
+    get_membership,
+    is_space_admin,
+    visible_messages_queryset,
+)
 from .serializers import (
-    GroupCreateSerializer,
-    GroupMemberAddSerializer,
-    GroupMembershipSerializer,
-    GroupSerializer,
-    GroupMemberUpdateSerializer,
+    ContactDiscoverySerializer,
+    SpaceCreateSerializer,
+    SpaceMemberAddSerializer,
+    SpaceMemberUpdateSerializer,
+    SpaceMembershipSerializer,
+    SpaceSerializer,
     MessageCreateSerializer,
     MessageSerializer,
     OTPRequestSerializer,
     OTPVerifySerializer,
+    ProfileUpdateSerializer,
+    PublicUserSerializer,
     TokenRefreshRequestSerializer,
     TokenRevokeSerializer,
+    UserSearchQuerySerializer,
     UserSerializer,
 )
 from .tasks import send_otp_task
@@ -47,52 +61,65 @@ OTP_VERIFY_ATTEMPTS_PREFIX = "otp_verify_attempts:"
 OTP_MAX_VERIFY_ATTEMPTS = 5
 
 
-def create_default_group_for_user(user: User) -> Group:
-    group = Group.objects.create(
+def generate_unique_username() -> str:
+    while True:
+        candidate = f"user{random.randint(100000, 999999)}"
+        if not User.objects.filter(username=candidate).exists():
+            return candidate
+
+
+def create_default_space_for_user(user: User) -> Space:
+    space = Space.objects.create(
         title="شخصی",
-        description="گروه پیش‌فرض شخصی",
+        description="فضا پیش‌فرض شخصی",
         owner=user,
+        kind=Space.KIND_PERSONAL,
     )
-    GroupMembership.objects.create(
-        group=group,
+    SpaceMembership.objects.create(
+        space=space,
         user=user,
-        role=GroupMembership.ROLE_OWNER,
+        role=SpaceMembership.ROLE_OWNER,
         is_pinned=True,
         can_read_history=True,
     )
-    return group
+    return space
 
 
-def get_membership(group: Group, user: User) -> GroupMembership | None:
-    return group.memberships.filter(user=user).first()
+def detect_attachment_kind(content_type: str | None, file_name: str, declared_kind: str | None = None) -> str:
+    if declared_kind in {
+        MessageAttachment.KIND_IMAGE,
+        MessageAttachment.KIND_VIDEO,
+        MessageAttachment.KIND_MUSIC,
+        MessageAttachment.KIND_VOICE,
+        MessageAttachment.KIND_DOCUMENT,
+        MessageAttachment.KIND_FILE,
+    }:
+        return declared_kind
+    mime = content_type or mimetypes.guess_type(file_name)[0] or ""
+    if mime.startswith("image/"):
+        return MessageAttachment.KIND_IMAGE
+    if mime.startswith("video/"):
+        return MessageAttachment.KIND_VIDEO
+    if mime.startswith("audio/"):
+        return MessageAttachment.KIND_MUSIC
+    if mime in {"application/pdf"} or mime.startswith("text/"):
+        return MessageAttachment.KIND_DOCUMENT
+    return MessageAttachment.KIND_FILE
 
 
-def get_group_for_user_or_404(group_id, user: User) -> Group:
-    return get_object_or_404(
-        Group.objects.prefetch_related("memberships__user"),
-        id=group_id,
-        memberships__user=user,
-    )
+def normalize_phone(phone: str) -> str:
+    digits = re.sub(r"\D", "", phone or "")
+    if digits.startswith("98") and len(digits) == 12:
+        digits = "0" + digits[2:]
+    if len(digits) == 10 and digits.startswith("9"):
+        digits = "0" + digits
+    return digits
 
 
-def is_group_admin(group: Group, user: User) -> bool:
-    return group.memberships.filter(
-        user=user,
-        role__in=[GroupMembership.ROLE_OWNER, GroupMembership.ROLE_ADMIN],
-        is_active=True,
-    ).exists()
-
-
-def can_manage_members(group: Group, user: User) -> bool:
-    return is_group_admin(group, user)
-
-
-def can_view_all(group: Group, user: User) -> bool:
-    return group.memberships.filter(
-        user=user,
-        role__in=[GroupMembership.ROLE_OWNER, GroupMembership.ROLE_ADMIN, GroupMembership.ROLE_VIEW_ALL],
-        is_active=True,
-    ).exists()
+class EntryPagination(PageNumberPagination):
+    page_size = 40
+    page_size_query_param = "page_size"
+    max_page_size = 100
 
 
 class OTPRequestView(APIView):
@@ -180,9 +207,13 @@ class TokenView(APIView):
         cache.delete(attempts_key)
 
         with transaction.atomic():
-            user, is_new_user = User.objects.get_or_create(phone=phone)
+            defaults = {"username": generate_unique_username(), "display_name": ""}
+            user, is_new_user = User.objects.get_or_create(phone=phone, defaults=defaults)
             if is_new_user:
-                create_default_group_for_user(user)
+                create_default_space_for_user(user)
+            elif not user.username:
+                user.username = generate_unique_username()
+                user.save(update_fields=["username"])
 
             UserClientLogin.objects.create(
                 user=user,
@@ -255,93 +286,157 @@ class MeView(APIView):
         return Response(UserSerializer(request.user, context={"request": request}).data)
 
 
-class GroupListCreateView(APIView):
+class ProfileView(APIView):
+    permission_classes = [IsAuthenticated]
+    parser_classes = [JSONParser, MultiPartParser, FormParser]
+
+    def patch(self, request):
+        serializer = ProfileUpdateSerializer(request.user, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(UserSerializer(request.user, context={"request": request}).data)
+
+
+class UserSearchView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        groups = (
-            Group.objects.filter(
+        serializer = UserSearchQuerySerializer(data=request.query_params)
+        serializer.is_valid(raise_exception=True)
+        query = serializer.validated_data["q"].strip().lower()
+        users = User.objects.filter(
+            Q(username__istartswith=query) | Q(display_name__icontains=query)
+        ).exclude(id=request.user.id)[:20]
+        return Response({"users": PublicUserSerializer(users, many=True, context={"request": request}).data})
+
+
+class ContactDiscoveryView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = ContactDiscoverySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        phones = serializer.validated_data.get("phones", [])
+        normalized = [normalize_phone(p) for p in phones]
+        normalized = [p for p in normalized if re.match(r"^09\d{9}$", p)]
+        users = User.objects.filter(phone__in=normalized).exclude(id=request.user.id)[:200]
+        return Response({"users": PublicUserSerializer(users, many=True, context={"request": request}).data})
+
+
+class SpaceListCreateView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        spaces = (
+            Space.objects.filter(
                 memberships__user=request.user,
                 memberships__can_read_history=True,
                 memberships__is_hidden=False,
             )
             .prefetch_related(
-                Prefetch("memberships", queryset=GroupMembership.objects.select_related("user").order_by("created_at"))
+                Prefetch("memberships", queryset=SpaceMembership.objects.select_related("user").order_by("created_at"))
             )
             .distinct()
             .order_by("-memberships__is_pinned", "-updated_at")
         )
-        serializer = GroupSerializer(groups, many=True, context={"request": request})
-        return Response({"groups": serializer.data})
+        serializer = SpaceSerializer(spaces, many=True, context={"request": request})
+        return Response({"spaces": serializer.data})
 
     def post(self, request):
-        serializer = GroupCreateSerializer(data=request.data)
+        serializer = SpaceCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         member_ids = serializer.validated_data.pop("member_ids", [])
 
         with transaction.atomic():
-            group = serializer.save(owner=request.user)
-            GroupMembership.objects.create(
-                group=group,
+            space = serializer.save(owner=request.user, kind=Space.KIND_SPACE)
+            SpaceMembership.objects.create(
+                space=space,
                 user=request.user,
-                role=GroupMembership.ROLE_OWNER,
+                role=SpaceMembership.ROLE_OWNER,
                 is_pinned=True,
             )
             if member_ids:
                 members = User.objects.filter(id__in=member_ids).exclude(id=request.user.id)
-                GroupMembership.objects.bulk_create(
+                SpaceMembership.objects.bulk_create(
                     [
-                        GroupMembership(group=group, user=member, role=GroupMembership.ROLE_MEMBER)
+                        SpaceMembership(space=space, user=member, role=SpaceMembership.ROLE_MEMBER)
                         for member in members
                     ],
                     ignore_conflicts=True,
                 )
 
-        group = Group.objects.prefetch_related("memberships__user").get(id=group.id)
+        space = Space.objects.prefetch_related("memberships__user").get(id=space.id)
         return Response(
-            GroupSerializer(group, context={"request": request}).data,
+            SpaceSerializer(space, context={"request": request}).data,
             status=status.HTTP_201_CREATED,
         )
 
 
-class GroupDetailView(APIView):
+class SpaceDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
-    def get(self, request, group_id):
-        group = get_group_for_user_or_404(group_id, request.user)
-        serializer = GroupSerializer(group, context={"request": request})
+    def get(self, request, space_id):
+        space = get_space_for_user_or_404(space_id, request.user)
+        serializer = SpaceSerializer(space, context={"request": request})
         return Response(serializer.data)
 
-    def patch(self, request, group_id):
-        group = get_group_for_user_or_404(group_id, request.user)
-        if not is_group_admin(group, request.user):
+    def patch(self, request, space_id):
+        space = get_space_for_user_or_404(space_id, request.user)
+        if not is_space_admin(space, request.user):
             return Response(
-                {"error": {"code": "FORBIDDEN", "message": "فقط مدیر گروه می‌تواند گروه را ویرایش کند"}},
+                {"error": {"code": "FORBIDDEN", "message": "فقط مدیر فضا می‌تواند فضا را ویرایش کند"}},
                 status=status.HTTP_403_FORBIDDEN,
             )
-        serializer = GroupCreateSerializer(group, data=request.data, partial=True)
+        serializer = SpaceCreateSerializer(space, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
-        group.refresh_from_db()
-        group = Group.objects.prefetch_related("memberships__user").get(id=group.id)
-        return Response(GroupSerializer(group, context={"request": request}).data)
+        space.refresh_from_db()
+        space = Space.objects.prefetch_related("memberships__user").get(id=space.id)
+        return Response(SpaceSerializer(space, context={"request": request}).data)
 
 
-class GroupMemberAddView(APIView):
+class SpaceConvertView(APIView):
     permission_classes = [IsAuthenticated]
 
-    def post(self, request, group_id):
-        group = get_group_for_user_or_404(group_id, request.user)
-        if not can_manage_members(group, request.user):
+    def post(self, request, space_id):
+        space = get_space_for_user_or_404(space_id, request.user)
+        if space.owner_id != request.user.id:
             return Response(
-                {"error": {"code": "FORBIDDEN", "message": "فقط مدیر گروه می‌تواند عضو اضافه کند"}},
+                {"error": {"code": "FORBIDDEN", "message": "فقط مالک می‌تواند فضا شخصی را تبدیل کند"}},
                 status=status.HTTP_403_FORBIDDEN,
             )
-        serializer = GroupMemberAddSerializer(data=request.data)
+        if space.kind != Space.KIND_PERSONAL:
+            return Response({"error": {"code": "INVALID_STATE", "message": "این فضا شخصی نیست"}}, status=400)
+        if request.data.get("confirm") is not True:
+            return Response(
+                {"error": {"code": "CONFIRM_REQUIRED", "message": "برای تبدیل باید confirm=true ارسال شود"}},
+                status=400,
+            )
+        space.kind = Space.KIND_SPACE
+        space.save(update_fields=["kind"])
+        return Response(SpaceSerializer(space, context={"request": request}).data)
+
+
+class SpaceMemberAddView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, space_id):
+        space = get_space_for_user_or_404(space_id, request.user)
+        if not can_manage_members(space, request.user):
+            return Response(
+                {"error": {"code": "FORBIDDEN", "message": "فقط مدیر فضا می‌تواند عضو اضافه کند"}},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        serializer = SpaceMemberAddSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        member = get_object_or_404(User, id=serializer.validated_data["user_id"])
-        membership, created = GroupMembership.objects.update_or_create(
-            group=group,
+        user_id = serializer.validated_data.get("user_id")
+        username = serializer.validated_data.get("username")
+        if user_id:
+            member = get_object_or_404(User, id=user_id)
+        else:
+            member = get_object_or_404(User, username=username.lower())
+        membership, created = SpaceMembership.objects.update_or_create(
+            space=space,
             user=member,
             defaults={
                 "role": serializer.validated_data["role"],
@@ -351,40 +446,40 @@ class GroupMemberAddView(APIView):
             },
         )
         status_code = status.HTTP_201_CREATED if created else status.HTTP_200_OK
-        return Response(GroupMembershipSerializer(membership).data, status=status_code)
+        return Response(SpaceMembershipSerializer(membership, context={"request": request}).data, status=status_code)
 
 
-class GroupMemberListView(APIView):
+class SpaceMemberListView(APIView):
     permission_classes = [IsAuthenticated]
 
-    def get(self, request, group_id):
-        group = get_group_for_user_or_404(group_id, request.user)
-        if not can_manage_members(group, request.user):
+    def get(self, request, space_id):
+        space = get_space_for_user_or_404(space_id, request.user)
+        if not can_manage_members(space, request.user):
             return Response(
-                {"error": {"code": "FORBIDDEN", "message": "فقط مدیر گروه می‌تواند لیست اعضا را ببیند"}},
+                {"error": {"code": "FORBIDDEN", "message": "فقط مدیر فضا می‌تواند لیست اعضا را ببیند"}},
                 status=status.HTTP_403_FORBIDDEN,
             )
-        memberships = group.memberships.select_related("user").order_by("created_at")
-        return Response({"members": GroupMembershipSerializer(memberships, many=True).data})
+        memberships = space.memberships.select_related("user").order_by("created_at")
+        return Response({"members": SpaceMembershipSerializer(memberships, many=True, context={"request": request}).data})
 
 
-class GroupMemberUpdateView(APIView):
+class SpaceMemberUpdateView(APIView):
     permission_classes = [IsAuthenticated]
 
-    def patch(self, request, group_id, user_id):
-        group = get_group_for_user_or_404(group_id, request.user)
-        if not can_manage_members(group, request.user):
+    def patch(self, request, space_id, user_id):
+        space = get_space_for_user_or_404(space_id, request.user)
+        if not can_manage_members(space, request.user):
             return Response(
-                {"error": {"code": "FORBIDDEN", "message": "فقط مدیر گروه می‌تواند نقش اعضا را تغییر دهد"}},
+                {"error": {"code": "FORBIDDEN", "message": "فقط مدیر فضا می‌تواند نقش اعضا را تغییر دهد"}},
                 status=status.HTTP_403_FORBIDDEN,
             )
-        membership = get_object_or_404(GroupMembership, group=group, user_id=user_id)
-        if membership.role == GroupMembership.ROLE_OWNER:
+        membership = get_object_or_404(SpaceMembership, space=space, user_id=user_id)
+        if membership.role == SpaceMembership.ROLE_OWNER:
             return Response(
                 {"error": {"code": "FORBIDDEN", "message": "نقش مالک قابل تغییر نیست"}},
                 status=status.HTTP_403_FORBIDDEN,
             )
-        serializer = GroupMemberUpdateSerializer(data=request.data)
+        serializer = SpaceMemberUpdateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         updates = []
         if "role" in serializer.validated_data:
@@ -400,21 +495,21 @@ class GroupMemberUpdateView(APIView):
             updates.append("removed_at")
         if updates:
             membership.save(update_fields=updates)
-        return Response(GroupMembershipSerializer(membership).data)
+        return Response(SpaceMembershipSerializer(membership, context={"request": request}).data)
 
 
-class GroupMemberRemoveView(APIView):
+class SpaceMemberRemoveView(APIView):
     permission_classes = [IsAuthenticated]
 
-    def delete(self, request, group_id, user_id):
-        group = get_group_for_user_or_404(group_id, request.user)
-        if not can_manage_members(group, request.user):
+    def delete(self, request, space_id, user_id):
+        space = get_space_for_user_or_404(space_id, request.user)
+        if not can_manage_members(space, request.user):
             return Response(
-                {"error": {"code": "FORBIDDEN", "message": "فقط مدیر گروه می‌تواند عضو را حذف کند"}},
+                {"error": {"code": "FORBIDDEN", "message": "فقط مدیر فضا می‌تواند عضو را حذف کند"}},
                 status=status.HTTP_403_FORBIDDEN,
             )
-        membership = get_object_or_404(GroupMembership, group=group, user_id=user_id)
-        if membership.role == GroupMembership.ROLE_OWNER:
+        membership = get_object_or_404(SpaceMembership, space=space, user_id=user_id)
+        if membership.role == SpaceMembership.ROLE_OWNER:
             return Response(
                 {"error": {"code": "FORBIDDEN", "message": "نقش مالک قابل حذف نیست"}},
                 status=status.HTTP_403_FORBIDDEN,
@@ -422,15 +517,15 @@ class GroupMemberRemoveView(APIView):
         membership.is_active = False
         membership.removed_at = timezone.now()
         membership.save(update_fields=["is_active", "removed_at"])
-        return Response(GroupMembershipSerializer(membership).data)
+        return Response(SpaceMembershipSerializer(membership, context={"request": request}).data)
 
 
-class GroupPreferenceView(APIView):
+class SpacePreferenceView(APIView):
     permission_classes = [IsAuthenticated]
 
-    def patch(self, request, group_id):
-        group = get_group_for_user_or_404(group_id, request.user)
-        membership = get_membership(group, request.user)
+    def patch(self, request, space_id):
+        space = get_space_for_user_or_404(space_id, request.user)
+        membership = get_membership(space, request.user)
         if not membership:
             return Response(
                 {"error": {"code": "NOT_FOUND", "message": "عضویت یافت نشد"}},
@@ -447,25 +542,26 @@ class GroupPreferenceView(APIView):
             updates.append("is_hidden")
         if updates:
             membership.save(update_fields=updates)
-        return Response(GroupMembershipSerializer(membership).data)
+        return Response(SpaceMembershipSerializer(membership, context={"request": request}).data)
 
 
-class GroupMessageListCreateView(APIView):
+class SpaceMessageListCreateView(APIView):
     permission_classes = [IsAuthenticated]
     parser_classes = [JSONParser, MultiPartParser, FormParser]
 
-    def get(self, request, group_id):
-        group = get_group_for_user_or_404(group_id, request.user)
-        membership = get_membership(group, request.user)
+    def get(self, request, space_id):
+        space = get_space_for_user_or_404(space_id, request.user)
+        membership = get_membership(space, request.user)
         if not membership or not membership.can_read_history:
             return Response(
-                {"error": {"code": "FORBIDDEN", "message": "دسترسی به تاریخچه این گروه ندارید"}},
+                {"error": {"code": "FORBIDDEN", "message": "دسترسی به تاریخچه این فضا ندارید"}},
                 status=status.HTTP_403_FORBIDDEN,
             )
-        queryset = self._visible_messages_queryset(group, request.user)
+        queryset = visible_messages_queryset(space, request.user)
 
         search = request.query_params.get("search", "").strip()
         sender = request.query_params.get("sender")
+        sender_username = request.query_params.get("sender_username")
         date_from = request.query_params.get("date_from")
         date_to = request.query_params.get("date_to")
 
@@ -479,6 +575,8 @@ class GroupMessageListCreateView(APIView):
                     {"error": {"code": "INVALID_SENDER", "message": "شناسه فرستنده نامعتبر است"}},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+        if sender_username:
+            queryset = queryset.filter(sender__username__iexact=sender_username.strip().lower())
         if date_from:
             dt = parse_datetime(date_from) or None
             if dt is None:
@@ -502,32 +600,44 @@ class GroupMessageListCreateView(APIView):
                 dt = timezone.make_aware(timezone.datetime.combine(d, timezone.datetime.max.time()))
             queryset = queryset.filter(created_at__lte=dt)
 
-        serializer = MessageSerializer(queryset.distinct(), many=True, context={"request": request})
-        return Response({"messages": serializer.data})
+        paginator = EntryPagination()
+        page = paginator.paginate_queryset(queryset.distinct(), request)
+        serializer = MessageSerializer(page, many=True, context={"request": request})
+        return paginator.get_paginated_response({"entries": serializer.data})
 
-    def post(self, request, group_id):
-        group = get_group_for_user_or_404(group_id, request.user)
+    def post(self, request, space_id):
+        space = get_space_for_user_or_404(space_id, request.user)
         serializer = MessageCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        membership = get_membership(group, request.user)
+        membership = get_membership(space, request.user)
         if not membership or not membership.is_active:
             return Response(
-                {"error": {"code": "FORBIDDEN", "message": "امکان ارسال پیام در این گروه ندارید"}},
+                {"error": {"code": "FORBIDDEN", "message": "امکان ثبت رویداد در این فضا ندارید"}},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
+        attachments = serializer.validated_data.pop("attachments", [])
+        attachment_kinds = serializer.validated_data.pop("attachment_kinds", [])
         with transaction.atomic():
-            message = serializer.save(group=group, sender=request.user)
-            Group.objects.filter(id=group.id).update(updated_at=timezone.now())
+            message = Message.objects.create(space=space, sender=request.user, text=serializer.validated_data.get("text", ""))
+            files = list(attachments)
+            for index, f in enumerate(files):
+                declared_kind = attachment_kinds[index] if index < len(attachment_kinds) else None
+                MessageAttachment.objects.create(
+                    message=message,
+                    file=f,
+                    kind=detect_attachment_kind(
+                        getattr(f, "content_type", None),
+                        getattr(f, "name", ""),
+                        declared_kind=declared_kind,
+                    ),
+                    original_name=getattr(f, "name", "") or "",
+                    sort_order=index,
+                )
+            Space.objects.filter(id=space.id).update(updated_at=timezone.now())
 
-        message = Message.objects.select_related("sender").get(id=message.id)
+        message = Message.objects.select_related("sender").prefetch_related("attachments").get(id=message.id)
         return Response(
             MessageSerializer(message, context={"request": request}).data,
             status=status.HTTP_201_CREATED,
         )
-
-    def _visible_messages_queryset(self, group: Group, user: User):
-        queryset = Message.objects.filter(group=group).select_related("sender")
-        if can_view_all(group, user):
-            return queryset
-        return queryset.filter(Q(sender=user))

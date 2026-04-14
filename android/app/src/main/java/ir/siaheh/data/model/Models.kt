@@ -53,8 +53,37 @@ data class RefreshTokenResponse(
 data class User(
     val id: String,
     val phone: String,
+    val username: String,
+    @Json(name = "display_name") val displayName: String = "",
+    @Json(name = "avatar_url") val avatarUrl: String? = null,
+    val about: String = "",
     @Json(name = "created_at") val createdAt: String? = null,
 )
+
+@JsonClass(generateAdapter = true)
+data class PublicUser(
+    val id: String,
+    val username: String,
+    @Json(name = "display_name") val displayName: String = "",
+    @Json(name = "avatar_url") val avatarUrl: String? = null,
+    val about: String = "",
+)
+
+@JsonClass(generateAdapter = true)
+data class ProfileUpdateRequest(
+    @Json(name = "display_name") val displayName: String? = null,
+    val username: String? = null,
+    val about: String? = null,
+)
+
+@JsonClass(generateAdapter = true)
+data class UserSearchResponse(val users: List<PublicUser>)
+
+@JsonClass(generateAdapter = true)
+data class DiscoverContactsRequest(val phones: List<String>)
+
+@JsonClass(generateAdapter = true)
+data class DiscoverContactsResponse(val users: List<PublicUser>)
 
 @JsonClass(generateAdapter = true)
 data class AppVersionResponse(
@@ -74,10 +103,10 @@ data class OtpChannel(
 data class OtpChannelsResponse(val channels: List<OtpChannel>)
 
 @JsonClass(generateAdapter = true)
-data class GroupMember(
+data class SpaceMember(
     val id: String,
     @Json(name = "user_id") val userId: String,
-    val phone: String,
+    val user: PublicUser,
     val role: String,
     @Json(name = "is_active") val isActive: Boolean,
     @Json(name = "can_read_history") val canReadHistory: Boolean,
@@ -88,68 +117,85 @@ data class GroupMember(
 )
 
 @JsonClass(generateAdapter = true)
-data class Group(
+data class Space(
     val id: String,
     val title: String,
     val description: String = "",
+    val kind: String = "space",
     @Json(name = "members_count") val membersCount: Int = 0,
     val role: String? = null,
     @Json(name = "is_pinned") val isPinned: Boolean = false,
     @Json(name = "is_hidden") val isHidden: Boolean = false,
-    val members: List<GroupMember> = emptyList(),
+    @Json(name = "latest_entry_preview") val latestEntryPreview: String = "",
+    val members: List<SpaceMember> = emptyList(),
     @Json(name = "created_at") val createdAt: String = "",
     @Json(name = "updated_at") val updatedAt: String = "",
 )
 
 @JsonClass(generateAdapter = true)
-data class GroupsResponse(val groups: List<Group>)
+data class SpacesResponse(val spaces: List<Space>)
 
 @JsonClass(generateAdapter = true)
-data class GroupCreateRequest(
+data class SpaceCreateRequest(
     val title: String,
     val description: String? = null,
     @Json(name = "member_ids") val memberIds: List<String>? = null,
 )
 
 @JsonClass(generateAdapter = true)
-data class GroupMemberAddRequest(
-    @Json(name = "user_id") val userId: String,
+data class SpaceMemberAddRequest(
+    @Json(name = "user_id") val userId: String? = null,
+    val username: String? = null,
     val role: String = "member",
 )
 
 @JsonClass(generateAdapter = true)
-data class GroupMemberUpdateRequest(
+data class SpaceMemberUpdateRequest(
     val role: String? = null,
     @Json(name = "can_read_history") val canReadHistory: Boolean? = null,
     @Json(name = "is_active") val isActive: Boolean? = null,
 )
 
 @JsonClass(generateAdapter = true)
-data class GroupPreferencesRequest(
+data class SpacePreferencesRequest(
     @Json(name = "is_pinned") val isPinned: Boolean? = null,
     @Json(name = "is_hidden") val isHidden: Boolean? = null,
 )
 
 @JsonClass(generateAdapter = true)
-data class GroupMembersResponse(@Json(name = "members") val members: List<GroupMember>)
+data class SpaceMembersResponse(@Json(name = "members") val members: List<SpaceMember>)
 
 @JsonClass(generateAdapter = true)
-data class GroupMessage(
+data class EntryAttachment(
     val id: String,
-    @Json(name = "group_id") val groupId: String,
+    val kind: String,
+    @Json(name = "original_name") val originalName: String = "",
+    @Json(name = "sort_order") val sortOrder: Int = 0,
+    @Json(name = "file_url") val fileUrl: String,
+)
+
+@JsonClass(generateAdapter = true)
+data class SpaceEntry(
+    val id: String,
+    @Json(name = "space_id") val spaceId: String,
     @Json(name = "sender_id") val senderId: String,
-    @Json(name = "sender_phone") val senderPhone: String,
+    val sender: PublicUser,
     val text: String,
-    val image: String? = null,
-    @Json(name = "image_url") val imageUrl: String? = null,
+    val attachments: List<EntryAttachment> = emptyList(),
     @Json(name = "created_at") val createdAt: String = "",
     @Json(name = "updated_at") val updatedAt: String = "",
 )
 
 @JsonClass(generateAdapter = true)
-data class GroupMessagesResponse(@Json(name = "messages") val messages: List<GroupMessage>)
+data class EntriesPage(
+    val count: Int,
+    val next: String? = null,
+    val previous: String? = null,
+    val results: EntriesResult,
+)
 
 @JsonClass(generateAdapter = true)
-data class GroupMessageRequest(
-    val text: String? = null,
-)
+data class EntriesResult(val entries: List<SpaceEntry>)
+
+@JsonClass(generateAdapter = true)
+data class SpaceConvertRequest(val confirm: Boolean = true)

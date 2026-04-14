@@ -1,4 +1,4 @@
-package ir.siaheh.ui.group
+package ir.siaheh.ui.space
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -18,7 +18,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.hilt.navigation.compose.hiltViewModel
-import ir.siaheh.data.model.Group
+import ir.siaheh.data.model.Space
 import ir.siaheh.ui.common.FriendlyErrorMapper
 import ir.siaheh.ui.components.ErrorState
 import ir.siaheh.ui.components.LoadingIndicator
@@ -26,16 +26,16 @@ import ir.siaheh.ui.theme.Spacing
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun GroupListScreen(
-    onOpenGroup: (String) -> Unit,
-    viewModel: GroupListViewModel = hiltViewModel(),
+fun SpaceListScreen(
+    onOpenSpace: (String) -> Unit,
+    viewModel: SpaceListViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsState()
     var showCreateDialog by remember { mutableStateOf(false) }
     var title by remember { mutableStateOf(TextFieldValue("")) }
     var description by remember { mutableStateOf(TextFieldValue("")) }
-    var memberIds by remember { mutableStateOf(TextFieldValue("")) }
     var query by remember { mutableStateOf("") }
+    var pendingConvertSpace by remember { mutableStateOf<Space?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
 
     LaunchedEffect(uiState.error) {
@@ -45,27 +45,27 @@ fun GroupListScreen(
         viewModel.clearError()
     }
 
-    val filteredGroups = remember(uiState.groups, query) {
+    val filteredSpaces = remember(uiState.spaces, query) {
         val trimmed = query.trim()
         if (trimmed.isBlank()) {
-            uiState.groups
+            uiState.spaces
         } else {
-            uiState.groups.filter {
+            uiState.spaces.filter {
                 it.title.contains(trimmed, ignoreCase = true) ||
                     it.description.contains(trimmed, ignoreCase = true)
             }
         }
     }
-    val pinnedGroups = filteredGroups.filter { it.isPinned && !it.isHidden }
-    val regularGroups = filteredGroups.filter { !it.isPinned && !it.isHidden }
-    val hiddenGroups = filteredGroups.filter { it.isHidden }
+    val pinnedSpaces = filteredSpaces.filter { it.isPinned && !it.isHidden }
+    val regularSpaces = filteredSpaces.filter { !it.isPinned && !it.isHidden }
+    val hiddenSpaces = filteredSpaces.filter { it.isHidden }
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = {
                     Column {
-                        Text("گروه‌ها", style = MaterialTheme.typography.titleLarge)
+                        Text("فضاها", style = MaterialTheme.typography.titleLarge)
                         Text(
                             text = "سیاهه‌های اشتراکی و شخصی",
                             style = MaterialTheme.typography.labelMedium,
@@ -74,7 +74,7 @@ fun GroupListScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = { viewModel.loadGroups() }) {
+                    IconButton(onClick = { viewModel.loadSpaces() }) {
                         Icon(Icons.Default.Refresh, contentDescription = "بارگذاری دوباره")
                     }
                 },
@@ -82,21 +82,21 @@ fun GroupListScreen(
         },
         floatingActionButton = {
             FloatingActionButton(onClick = { showCreateDialog = true }) {
-                Icon(Icons.Default.Add, contentDescription = "ایجاد گروه")
+                Icon(Icons.Default.Add, contentDescription = "ایجاد فضا")
             }
         },
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
     ) { padding ->
-        if (uiState.isLoading && uiState.groups.isEmpty()) {
+        if (uiState.isLoading && uiState.spaces.isEmpty()) {
             LoadingIndicator(fullScreen = true)
             return@Scaffold
         }
 
-        if (!uiState.isLoading && filteredGroups.isEmpty()) {
+        if (!uiState.isLoading && filteredSpaces.isEmpty()) {
             val emptyMessage = uiState.error?.let { FriendlyErrorMapper.map(it).message }
             ErrorState(
-                message = emptyMessage ?: "هنوز گروهی ساخته نشده. اولین سیاهه را بسازیم؟",
-                actionLabel = "ساخت گروه",
+                message = emptyMessage ?: "هنوز فضایی ساخته نشده. اولین سیاهه را بسازیم؟",
+                actionLabel = "ساخت فضا",
                 onRetry = { showCreateDialog = true },
                 modifier = Modifier.padding(padding),
             )
@@ -116,11 +116,11 @@ fun GroupListScreen(
                     onValueChange = { query = it },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
-                    label = { Text("جستجو در گروه‌ها") },
+                    label = { Text("جستجو در فضاها") },
                 )
             }
 
-            if (pinnedGroups.isNotEmpty()) {
+            if (pinnedSpaces.isNotEmpty()) {
                 item {
                     Text(
                         "پین‌شده",
@@ -128,48 +128,51 @@ fun GroupListScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                items(pinnedGroups, key = { it.id }) { group ->
-                    GroupCard(
-                        group = group,
-                        onOpen = { onOpenGroup(group.id) },
-                        onTogglePin = { viewModel.updatePreferences(group.id, isPinned = !group.isPinned) },
-                        onToggleHide = { viewModel.updatePreferences(group.id, isHidden = !group.isHidden) },
+                items(pinnedSpaces, key = { it.id }) { space ->
+                    SpaceCard(
+                        space = space,
+                        onOpen = { onOpenSpace(space.id) },
+                        onTogglePin = { viewModel.updatePreferences(space.id, isPinned = !space.isPinned) },
+                        onToggleHide = { viewModel.updatePreferences(space.id, isHidden = !space.isHidden) },
+                        onConvertPersonal = { pendingConvertSpace = space },
                     )
                 }
             }
 
-            if (regularGroups.isNotEmpty()) {
+            if (regularSpaces.isNotEmpty()) {
                 item {
                     Text(
-                        "گروه‌ها",
+                        "فضاها",
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                items(regularGroups, key = { it.id }) { group ->
-                    GroupCard(
-                        group = group,
-                        onOpen = { onOpenGroup(group.id) },
-                        onTogglePin = { viewModel.updatePreferences(group.id, isPinned = !group.isPinned) },
-                        onToggleHide = { viewModel.updatePreferences(group.id, isHidden = !group.isHidden) },
+                items(regularSpaces, key = { it.id }) { space ->
+                    SpaceCard(
+                        space = space,
+                        onOpen = { onOpenSpace(space.id) },
+                        onTogglePin = { viewModel.updatePreferences(space.id, isPinned = !space.isPinned) },
+                        onToggleHide = { viewModel.updatePreferences(space.id, isHidden = !space.isHidden) },
+                        onConvertPersonal = { pendingConvertSpace = space },
                     )
                 }
             }
 
-            if (hiddenGroups.isNotEmpty()) {
+            if (hiddenSpaces.isNotEmpty()) {
                 item {
                     Text(
-                        "گروه‌های مخفی",
+                        "فضاهای مخفی",
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                items(hiddenGroups, key = { it.id }) { group ->
-                    GroupCard(
-                        group = group,
-                        onOpen = { onOpenGroup(group.id) },
-                        onTogglePin = { viewModel.updatePreferences(group.id, isPinned = !group.isPinned) },
-                        onToggleHide = { viewModel.updatePreferences(group.id, isHidden = !group.isHidden) },
+                items(hiddenSpaces, key = { it.id }) { space ->
+                    SpaceCard(
+                        space = space,
+                        onOpen = { onOpenSpace(space.id) },
+                        onTogglePin = { viewModel.updatePreferences(space.id, isPinned = !space.isPinned) },
+                        onToggleHide = { viewModel.updatePreferences(space.id, isHidden = !space.isHidden) },
+                        onConvertPersonal = { pendingConvertSpace = space },
                     )
                 }
             }
@@ -179,13 +182,13 @@ fun GroupListScreen(
     if (showCreateDialog) {
         AlertDialog(
             onDismissRequest = { showCreateDialog = false },
-            title = { Text("ایجاد گروه") },
+            title = { Text("ایجاد فضا") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
                     OutlinedTextField(
                         value = title,
                         onValueChange = { title = it },
-                        label = { Text("نام گروه") },
+                        label = { Text("نام فضا") },
                         singleLine = true,
                     )
                     OutlinedTextField(
@@ -194,21 +197,13 @@ fun GroupListScreen(
                         label = { Text("توضیح کوتاه") },
                         supportingText = { Text("اختیاری") },
                     )
-                    OutlinedTextField(
-                        value = memberIds,
-                        onValueChange = { memberIds = it },
-                        label = { Text("شناسه اعضا") },
-                        supportingText = { Text("اگر لازم است، شناسه‌ها را با کاما جدا کن") },
-                    )
                 }
             },
             confirmButton = {
                 TextButton(onClick = {
-                    val ids = memberIds.text.split(",").map { it.trim() }.filter { it.isNotBlank() }
-                    viewModel.createGroup(title.text, description.text, ids)
+                    viewModel.createSpace(title.text, description.text, null)
                     title = TextFieldValue("")
                     description = TextFieldValue("")
-                    memberIds = TextFieldValue("")
                     showCreateDialog = false
                 }) { Text("ساخت") }
             },
@@ -217,14 +212,30 @@ fun GroupListScreen(
             },
         )
     }
+
+    pendingConvertSpace?.let { space ->
+        AlertDialog(
+            onDismissRequest = { pendingConvertSpace = null },
+            title = { Text("تبدیل فضا شخصی") },
+            text = { Text("بعد از تبدیل فضا شخصی به فضا عمومی، این تغییر برگشت‌پذیر نیست. ادامه می‌دهی؟") },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.convertPersonalSpace(space.id)
+                    pendingConvertSpace = null
+                }) { Text("تبدیل") }
+            },
+            dismissButton = { TextButton(onClick = { pendingConvertSpace = null }) { Text("انصراف") } },
+        )
+    }
 }
 
 @Composable
-private fun GroupCard(
-    group: Group,
+private fun SpaceCard(
+    space: Space,
     onOpen: () -> Unit,
     onTogglePin: () -> Unit,
     onToggleHide: () -> Unit,
+    onConvertPersonal: () -> Unit,
 ) {
     Card(
         modifier = Modifier
@@ -243,13 +254,22 @@ private fun GroupCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(group.title, style = MaterialTheme.typography.titleMedium)
-                    if (group.description.isNotBlank()) {
+                    Text(space.title, style = MaterialTheme.typography.titleMedium)
+                    if (space.description.isNotBlank()) {
                         Text(
-                            text = group.description,
+                            text = space.description,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    if (space.latestEntryPreview.isNotBlank()) {
+                        Text(
+                            text = space.latestEntryPreview,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
@@ -257,16 +277,16 @@ private fun GroupCard(
                 Row(horizontalArrangement = Arrangement.spacedBy(Spacing.xs)) {
                     IconButton(onClick = onTogglePin) {
                         Icon(
-                            imageVector = if (group.isPinned) Icons.Filled.Star else Icons.Outlined.StarBorder,
+                            imageVector = if (space.isPinned) Icons.Filled.Star else Icons.Outlined.StarBorder,
                             contentDescription = "پین",
-                            tint = if (group.isPinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            tint = if (space.isPinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                     IconButton(onClick = onToggleHide) {
                         Icon(
-                            imageVector = if (group.isHidden) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
+                            imageVector = if (space.isHidden) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
                             contentDescription = "مخفی",
-                            tint = if (group.isHidden) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            tint = if (space.isHidden) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }
@@ -277,13 +297,16 @@ private fun GroupCard(
             ) {
                 AssistChip(
                     onClick = {},
-                    label = { Text("اعضا ${group.membersCount}") },
+                    label = { Text("اعضا ${space.membersCount}") },
                 )
-                if (group.isPinned) {
+                if (space.isPinned) {
                     AssistChip(onClick = {}, label = { Text("پین‌شده") })
                 }
-                if (group.isHidden) {
+                if (space.isHidden) {
                     AssistChip(onClick = {}, label = { Text("مخفی") })
+                }
+                if (space.kind == "personal") {
+                    AssistChip(onClick = onConvertPersonal, label = { Text("شخصی (تبدیل)") })
                 }
             }
         }

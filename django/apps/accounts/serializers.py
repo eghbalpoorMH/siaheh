@@ -1,6 +1,7 @@
 from rest_framework import serializers
+from django.conf import settings
 
-from .models import Group, GroupMembership, Message, User
+from .models import Space, SpaceMembership, Message, MessageAttachment, User
 
 
 class OTPRequestSerializer(serializers.Serializer):
@@ -29,26 +30,62 @@ class TokenRevokeSerializer(serializers.Serializer):
     refresh_token = serializers.CharField()
 
 
-class UserSerializer(serializers.ModelSerializer):
+class PublicUserSerializer(serializers.ModelSerializer):
+    avatar_url = serializers.SerializerMethodField()
+
     class Meta:
         model = User
-        fields = [
-            "id",
-            "phone",
-            "created_at",
-        ]
+        fields = ["id", "username", "display_name", "avatar_url", "about"]
+
+    def get_avatar_url(self, obj):
+        if not obj.avatar:
+            return None
+        request = self.context.get("request")
+        if request:
+            return request.build_absolute_uri(obj.avatar.url)
+        return obj.avatar.url
 
 
-class GroupMembershipSerializer(serializers.ModelSerializer):
-    user_id = serializers.UUIDField(source="user.id", read_only=True)
-    phone = serializers.CharField(source="user.phone", read_only=True)
+class UserSerializer(PublicUserSerializer):
+    class Meta(PublicUserSerializer.Meta):
+        fields = PublicUserSerializer.Meta.fields + ["phone", "created_at"]
+
+
+class ProfileUpdateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ["display_name", "username", "about", "avatar"]
+
+    def validate_username(self, value):
+        value = value.strip().lower()
+        if not value:
+            raise serializers.ValidationError("نام کاربری نمی‌تواند خالی باشد")
+        if len(value) < 4:
+            raise serializers.ValidationError("نام کاربری باید حداقل ۴ کاراکتر باشد")
+        return value
+
+
+class UserSearchQuerySerializer(serializers.Serializer):
+    q = serializers.CharField(max_length=64)
+
+
+class ContactDiscoverySerializer(serializers.Serializer):
+    phones = serializers.ListField(
+        child=serializers.RegexField(r"^09\d{9}$"),
+        allow_empty=True,
+        required=False,
+    )
+
+
+class SpaceMembershipSerializer(serializers.ModelSerializer):
+    user = PublicUserSerializer(read_only=True)
 
     class Meta:
-        model = GroupMembership
+        model = SpaceMembership
         fields = [
             "id",
             "user_id",
-            "phone",
+            "user",
             "role",
             "is_active",
             "can_read_history",
@@ -59,58 +96,66 @@ class GroupMembershipSerializer(serializers.ModelSerializer):
         ]
 
 
-class GroupSerializer(serializers.ModelSerializer):
+class SpaceSerializer(serializers.ModelSerializer):
     members_count = serializers.SerializerMethodField()
     role = serializers.SerializerMethodField()
     is_pinned = serializers.SerializerMethodField()
     is_hidden = serializers.SerializerMethodField()
-    members = GroupMembershipSerializer(source="memberships", many=True, read_only=True)
+    latest_entry_preview = serializers.SerializerMethodField()
+    members = SpaceMembershipSerializer(source="memberships", many=True, read_only=True)
 
     class Meta:
-        model = Group
+        model = Space
         fields = [
             "id",
             "title",
             "description",
+            "kind",
             "members_count",
             "role",
             "is_pinned",
             "is_hidden",
+            "latest_entry_preview",
             "members",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "members_count", "role", "is_pinned", "is_hidden", "members"]
+        read_only_fields = ["id", "members_count", "role", "is_pinned", "is_hidden", "latest_entry_preview", "members", "kind"]
 
     def get_members_count(self, obj):
-        return obj.memberships.count()
+        return obj.memberships.filter(is_active=True).count()
 
-    def get_role(self, obj):
+    def _get_membership(self, obj):
         request = self.context.get("request")
         user = getattr(request, "user", None)
         if not user or not user.is_authenticated:
             return None
-        membership = obj.memberships.filter(user=user).first()
+        return obj.memberships.filter(user=user).first()
+
+    def get_role(self, obj):
+        membership = self._get_membership(obj)
         return membership.role if membership else None
 
     def get_is_pinned(self, obj):
-        request = self.context.get("request")
-        user = getattr(request, "user", None)
-        if not user or not user.is_authenticated:
-            return False
-        membership = obj.memberships.filter(user=user).first()
+        membership = self._get_membership(obj)
         return bool(membership and membership.is_pinned)
 
     def get_is_hidden(self, obj):
-        request = self.context.get("request")
-        user = getattr(request, "user", None)
-        if not user or not user.is_authenticated:
-            return False
-        membership = obj.memberships.filter(user=user).first()
+        membership = self._get_membership(obj)
         return bool(membership and membership.is_hidden)
 
+    def get_latest_entry_preview(self, obj):
+        last = obj.messages.order_by("-created_at").first()
+        if not last:
+            return ""
+        if last.text:
+            return last.text[:80]
+        if last.attachments.exists():
+            return "فایل ضمیمه"
+        return ""
 
-class GroupCreateSerializer(serializers.ModelSerializer):
+
+class SpaceCreateSerializer(serializers.ModelSerializer):
     member_ids = serializers.ListField(
         child=serializers.UUIDField(),
         required=False,
@@ -119,57 +164,105 @@ class GroupCreateSerializer(serializers.ModelSerializer):
     )
 
     class Meta:
-        model = Group
+        model = Space
         fields = ["id", "title", "description", "member_ids", "created_at", "updated_at"]
         read_only_fields = ["id", "created_at", "updated_at"]
 
 
-class GroupMemberAddSerializer(serializers.Serializer):
-    user_id = serializers.UUIDField()
-    role = serializers.ChoiceField(choices=GroupMembership.ROLE_CHOICES, default=GroupMembership.ROLE_MEMBER)
+class SpaceMemberAddSerializer(serializers.Serializer):
+    user_id = serializers.UUIDField(required=False)
+    username = serializers.CharField(max_length=32, required=False, allow_blank=False)
+    role = serializers.ChoiceField(choices=SpaceMembership.ROLE_CHOICES, default=SpaceMembership.ROLE_MEMBER)
+
+    def validate(self, attrs):
+        if not attrs.get("user_id") and not attrs.get("username"):
+            raise serializers.ValidationError("شناسه کاربر یا نام کاربری الزامی است")
+        return attrs
 
 
-class GroupMemberUpdateSerializer(serializers.Serializer):
-    role = serializers.ChoiceField(choices=GroupMembership.ROLE_CHOICES, required=False)
+class SpaceMemberUpdateSerializer(serializers.Serializer):
+    role = serializers.ChoiceField(choices=SpaceMembership.ROLE_CHOICES, required=False)
     can_read_history = serializers.BooleanField(required=False)
     is_active = serializers.BooleanField(required=False)
 
 
+class MessageAttachmentSerializer(serializers.ModelSerializer):
+    file_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = MessageAttachment
+        fields = [
+            "id",
+            "kind",
+            "original_name",
+            "sort_order",
+            "file_url",
+        ]
+
+    def get_file_url(self, obj):
+        request = self.context.get("request")
+        if request:
+            return request.build_absolute_uri(obj.file.url)
+        return obj.file.url
+
+
 class MessageSerializer(serializers.ModelSerializer):
-    sender_id = serializers.UUIDField(source="sender.id", read_only=True)
-    sender_phone = serializers.CharField(source="sender.phone", read_only=True)
-    image_url = serializers.SerializerMethodField()
+    sender = PublicUserSerializer(read_only=True)
+    attachments = MessageAttachmentSerializer(many=True, read_only=True)
 
     class Meta:
         model = Message
         fields = [
             "id",
-            "group_id",
+            "space_id",
             "sender_id",
-            "sender_phone",
+            "sender",
             "text",
-            "image",
-            "image_url",
+            "attachments",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "sender_id", "sender_phone", "image_url"]
+        read_only_fields = ["id", "sender_id", "sender", "attachments"]
 
-    def get_image_url(self, obj):
-        if not obj.image:
-            return None
-        request = self.context.get("request")
-        if request:
-            return request.build_absolute_uri(obj.image.url)
-        return obj.image.url
 
 class MessageCreateSerializer(serializers.ModelSerializer):
+    attachments = serializers.ListField(
+        child=serializers.FileField(),
+        required=False,
+        allow_empty=True,
+        write_only=True,
+    )
+    attachment_kinds = serializers.ListField(
+        child=serializers.ChoiceField(choices=MessageAttachment.KIND_CHOICES),
+        required=False,
+        allow_empty=True,
+        write_only=True,
+    )
+
     class Meta:
         model = Message
-        fields = ["id", "text", "image", "created_at", "updated_at"]
+        fields = ["id", "text", "attachments", "attachment_kinds", "created_at", "updated_at"]
         read_only_fields = ["id", "created_at", "updated_at"]
 
     def validate(self, attrs):
-        if not attrs.get("text") and not attrs.get("image"):
-            raise serializers.ValidationError("پیام باید متن یا عکس داشته باشد")
+        text = (attrs.get("text") or "").strip()
+        files = attrs.get("attachments") or []
+        attachment_kinds = attrs.get("attachment_kinds") or []
+        if not text and not files:
+            raise serializers.ValidationError("ثبت باید متن یا فایل داشته باشد")
+        if attachment_kinds and len(attachment_kinds) != len(files):
+            raise serializers.ValidationError("تعداد نوع فایل‌ها باید با تعداد فایل‌ها برابر باشد")
+        max_attachments = max(getattr(settings, "ENTRY_MAX_ATTACHMENTS", 10), 1)
+        if len(files) > max_attachments:
+            raise serializers.ValidationError(f"حداکثر {max_attachments} فایل در هر ثبت مجاز است")
+        max_size = max(getattr(settings, "ENTRY_MAX_FILE_SIZE_MB", 25), 1) * 1024 * 1024
+        allowed_prefixes = tuple(getattr(settings, "ENTRY_ALLOWED_MIME_PREFIXES", []))
+        for f in files:
+            content_type = getattr(f, "content_type", "") or ""
+            size = getattr(f, "size", 0) or 0
+            if size > max_size:
+                raise serializers.ValidationError("حجم فایل بیش از حد مجاز است")
+            if allowed_prefixes and not any(content_type.startswith(prefix) for prefix in allowed_prefixes):
+                raise serializers.ValidationError("نوع فایل مجاز نیست")
+        attrs["text"] = text
         return attrs

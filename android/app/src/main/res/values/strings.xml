@@ -8,7 +8,7 @@
     <string name="otp_resend">ارسال مجدد کد</string>
     <string name="otp_resend_timer">ارسال مجدد (%s)</string>
     <string name="otp_no_sms">پیامک نیومد؟ از پیام‌رسان کد بگیر:</string>
-    <string name="nav_groups">گروه‌ها</string>
+    <string name="nav_spaces">فضاها</string>
     <string name="error_title">مشکلی پیش اومد!</string>
     <string name="error_subtitle">اتصال اینترنت رو بررسی کن و دوباره امتحان کن</string>
     <string name="retry">تلاش مجدد</string>
